@@ -1,0 +1,565 @@
+local library = loadstring(game:HttpGet("https://raw.githubusercontent.com/Rain-Design/Libraries/main/Revenant.lua"))()
+local TweenService = game:GetService("TweenService")
+local ReplicatedStorage = game:GetService("ReplicatedStorage")
+
+local speedEnabled = false
+local speedMultiplier = 16
+local killAuraEnabled = false
+local killAuraRange = 10
+local currentTarget = nil
+local highlight = Instance.new("Highlight")
+highlight.FillColor = Color3.fromRGB(255, 0, 0)
+highlight.OutlineColor = Color3.fromRGB(255, 255, 0)
+local attackCooldown = 0.1
+local teleportCooldown = 2
+local lastAttackTime = 0
+local lastTeleportTime = 0
+local attackDamage = 0
+local spawnProtectionTime = 1.5
+local playerSpawnTimes = {}
+local targetStrafeEnabled = false
+local smartStrafeEnabled = false
+local strafeSpeed = 1
+local strafeDistance = 4
+local espEnabled = false
+local espHighlights = {}
+local flyEnabled = false
+local flySpeed = 20
+local flyPlatform = nil
+local maxFlyHeight = 5
+local initialFlyHeight = nil
+local aimbotEnabled = false
+local aimbotRange = 50 
+local aimbotSmoothness = 1 
+local autoAttackEnabled = false 
+local friendsList = {}
+
+local CombatWindow = library:Window({Text = "Combat"})
+local MovementWindow = library:Window({Text = "Movement"})
+local RenderWindow = library:Window({Text = "Render"})
+local MiscWindow = library:Window({Text = "Misc"})
+
+-- Функция проверки, является ли игрок другом
+local function isFriend(player)
+    return table.find(friendsList, player.Name) ~= nil
+end
+
+local function findPlayerByPartialName(partialName)
+    partialName = partialName:lower()
+    for _, player in pairs(game.Players:GetPlayers()) do
+        if player.Name:lower():find(partialName) then
+            return player
+        end
+    end
+    return nil
+end
+
+game.Players.LocalPlayer.Chatted:Connect(function(message)
+    local args = message:split(" ")
+    if args[1] == ".friend" then
+        if args[2] == "add" and args[3] then
+            local targetName = args[3]
+            local targetPlayer = findPlayerByPartialName(targetName)
+            if targetPlayer then
+                if not isFriend(targetPlayer) then
+                    table.insert(friendsList, targetPlayer.Name)
+                    game.StarterGui:SetCore("SendNotification", {Title = "Friend System", Text = targetPlayer.Name .. " added to friends!", Duration = 3})
+                else
+                    game.StarterGui:SetCore("SendNotification", {Title = "Friend System", Text = targetPlayer.Name .. " is already your friend!", Duration = 3})
+                end
+            else
+                game.StarterGui:SetCore("SendNotification", {Title = "Friend System", Text = "Player with name similar to '" .. targetName .. "' not found!", Duration = 3})
+            end
+        elseif args[2] == "remove" and args[3] then
+            local targetName = args[3]
+            local targetPlayer = findPlayerByPartialName(targetName)
+            if targetPlayer then
+                local friendIndex = table.find(friendsList, targetPlayer.Name)
+                if friendIndex then
+                    table.remove(friendsList, friendIndex)
+                    game.StarterGui:SetCore("SendNotification", {Title = "Friend System", Text = targetPlayer.Name .. " removed from friends!", Duration = 3})
+                else
+                    game.StarterGui:SetCore("SendNotification", {Title = "Friend System", Text = targetPlayer.Name .. " is not in your friends list!", Duration = 3})
+                end
+            else
+                game.StarterGui:SetCore("SendNotification", {Title = "Friend System", Text = "Player with name similar to '" .. targetName .. "' not found!", Duration = 3})
+            end
+        end
+    end
+end)
+
+game.Players.PlayerAdded:Connect(function(player)
+    player.CharacterAdded:Connect(function(character)
+        playerSpawnTimes[player] = tick()
+        if espEnabled and player ~= game.Players.LocalPlayer then
+            local espHighlight = Instance.new("Highlight")
+            espHighlight.FillColor = Color3.fromRGB(0, 255, 0)
+            espHighlight.OutlineColor = Color3.fromRGB(0, 0, 0)
+            espHighlight.Parent = character
+            espHighlights[player] = espHighlight
+        end
+    end)
+end)
+
+local function getClosestTargetForAimbot()
+    local player = game.Players.LocalPlayer
+    local character = player.Character
+    if not character or not character:FindFirstChild("HumanoidRootPart") then return nil end
+    local rootPart = character.HumanoidRootPart
+    local closestTarget = nil
+    local minDistance = aimbotRange
+
+    for _, otherPlayer in pairs(game.Players:GetPlayers()) do
+        if otherPlayer ~= player and not isFriend(otherPlayer) and otherPlayer.Character then
+            local targetRoot = otherPlayer.Character:FindFirstChild("HumanoidRootPart")
+            local targetHumanoid = otherPlayer.Character:FindFirstChild("Humanoid")
+            if targetRoot and targetHumanoid and targetHumanoid.Health > 0 then
+                local distance = (rootPart.Position - targetRoot.Position).Magnitude
+                local spawnTime = playerSpawnTimes[otherPlayer] or 0
+                local timeSinceSpawn = tick() - spawnTime
+                if distance <= minDistance and timeSinceSpawn > spawnProtectionTime then
+                    closestTarget = targetRoot
+                    minDistance = distance
+                end
+            end
+        end
+    end
+    return closestTarget
+end
+
+local function canHitTarget(player, target)
+    local character = player.Character
+    if not character then return false end
+    
+    local tool = character:FindFirstChildOfClass("Tool")
+    local handle = tool and tool:FindFirstChild("Handle")
+    if not handle then return false end
+
+    local targetRoot = target.Parent:FindFirstChild("HumanoidRootPart") 
+    if not targetRoot then return false end
+
+    local distance = (handle.Position - targetRoot.Position).Magnitude
+    local swordReach = 6.5 
+
+    return distance <= swordReach
+end
+
+CombatWindow:Toggle({
+    Text = "Kill Aura",
+    Default = false,
+    Callback = function(state)
+        killAuraEnabled = state
+        local player = game.Players.LocalPlayer
+        local character = player.Character or player.CharacterAdded:Wait()
+        local rootPart = character:WaitForChild("HumanoidRootPart")
+        local humanoid = character:WaitForChild("Humanoid")
+
+        if killAuraEnabled then
+            game:GetService("RunService").Heartbeat:Connect(function(deltaTime)
+                if killAuraEnabled and character and rootPart and humanoid.Health > 0 then
+                    local closestTarget = nil
+                    local minDistance = killAuraRange
+
+                    for _, otherPlayer in pairs(game.Players:GetPlayers()) do
+                        if otherPlayer ~= player and not isFriend(otherPlayer) and otherPlayer.Character then
+                            local targetRoot = otherPlayer.Character:FindFirstChild("HumanoidRootPart")
+                            local targetHumanoid = otherPlayer.Character:FindFirstChild("Humanoid")
+                            if targetRoot and targetHumanoid and targetHumanoid.Health > 0 then
+                                local distance = (rootPart.Position - targetRoot.Position).Magnitude
+                                local spawnTime = playerSpawnTimes[otherPlayer] or 0
+                                local timeSinceSpawn = tick() - spawnTime
+                                if distance <= minDistance and timeSinceSpawn > spawnProtectionTime then
+                                    closestTarget = otherPlayer.Character
+                                    minDistance = distance
+                                end
+                            end
+                        end
+                    end
+
+                    if closestTarget ~= currentTarget then
+                        if currentTarget then highlight.Parent = nil end
+                        currentTarget = closestTarget
+                        if currentTarget then highlight.Parent = currentTarget end
+                    end
+
+                    if currentTarget and (not currentTarget:FindFirstChild("Humanoid") or currentTarget.Humanoid.Health <= 0) then
+                        highlight.Parent = nil
+                        currentTarget = nil
+                    end
+
+                    if currentTarget then
+                        local targetRoot = currentTarget:FindFirstChild("HumanoidRootPart")
+                        local targetHumanoid = currentTarget:FindFirstChild("Humanoid")
+                        if targetRoot and targetHumanoid and targetHumanoid.Health > 0 then
+                            local currentTime = tick()
+                            if currentTime - lastTeleportTime >= teleportCooldown then
+                                wait(math.random(10, 30) / 100)
+                                local targetCFrame = targetRoot.CFrame
+                                local teleportPosition = targetCFrame.Position - targetCFrame.LookVector * 3
+                                rootPart.CFrame = CFrame.new(teleportPosition, targetRoot.Position)
+                                lastTeleportTime = currentTime
+                            end
+
+                            if targetStrafeEnabled and currentTarget then
+                                local targetRoot = currentTarget:FindFirstChild("HumanoidRootPart")
+                                if targetRoot then
+                                    local angle = tick() * strafeSpeed
+                                    local targetCFrame = targetRoot.CFrame
+                                    local strafePosition
+                                    local targetTool = currentTarget:FindFirstChildOfClass("Tool")
+                                    local isTargetAttacking = targetTool and targetTool:FindFirstChild("Handle") and 
+                                        currentTarget.Humanoid:FindFirstChild("Animator"):GetPlayingAnimationTracks()[1] ~= nil
+
+                                    local targetHeight = targetRoot.Position.Y
+
+                                    if smartStrafeEnabled then
+                                        local basePosition = targetRoot.Position
+                                        local retreatDistance = strafeDistance * 2
+                                        local strafeDistanceNormal = strafeDistance
+                                        local lookVector = targetCFrame.LookVector
+
+                                        if isTargetAttacking then
+                                            strafePosition = basePosition - (lookVector * retreatDistance)
+                                        else
+                                            local relativeOffset = Vector3.new(
+                                                math.sin(angle) * strafeDistanceNormal,
+                                                0,
+                                                math.cos(angle) * strafeDistanceNormal
+                                            )
+                                            strafePosition = basePosition + (targetCFrame:VectorToWorldSpace(relativeOffset))
+                                        end
+
+                                        strafePosition = Vector3.new(strafePosition.X, targetHeight, strafePosition.Z)
+                                        local currentPosition = rootPart.Position
+                                        local newPosition = currentPosition:Lerp(strafePosition, strafeSpeed * deltaTime)
+                                        rootPart.CFrame = CFrame.new(newPosition, targetRoot.Position)
+                                    else
+                                        strafePosition = targetRoot.Position + Vector3.new(
+                                            math.sin(angle) * strafeDistance,
+                                            0,
+                                            math.cos(angle) * strafeDistance
+                                        )
+                                        strafePosition = Vector3.new(strafePosition.X, targetHeight, strafePosition.Z)
+                                        rootPart.CFrame = CFrame.new(strafePosition, targetRoot.Position)
+                                    end
+                                end
+                            end
+
+                            if currentTime - lastAttackTime >= attackCooldown then
+                                local tool = character:FindFirstChildOfClass("Tool")
+                                if tool and tool:FindFirstChild("Handle") then
+                                    tool:Activate()
+                                    targetHumanoid:TakeDamage(attackDamage)
+                                    lastAttackTime = currentTime
+                                end
+                            end
+                        end
+                    end
+                else
+                    highlight.Parent = nil
+                    currentTarget = nil
+                end
+            end)
+        else
+            highlight.Parent = nil
+            currentTarget = nil
+        end
+    end
+})
+
+CombatWindow:Slider({
+    Text = "Kill Aura Range",
+    Minimum = 5,
+    Maximum = 50,
+    Default = killAuraRange,
+    Callback = function(value)
+        killAuraRange = value
+    end
+})
+
+CombatWindow:Slider({
+    Text = "Teleport Cooldown",
+    Minimum = 1,
+    Maximum = 5,
+    Default = teleportCooldown,
+    Callback = function(value)
+        teleportCooldown = value
+    end
+})
+
+CombatWindow:Toggle({
+    Text = "Aimbot",
+    Default = false,
+    Callback = function(state)
+        aimbotEnabled = state
+    end
+})
+
+CombatWindow:Toggle({
+    Text = "Auto Attack",
+    Default = false,
+    Callback = function(state)
+        autoAttackEnabled = state
+    end
+})
+
+local lastAimbotAttackTime = 0
+game:GetService("RunService").RenderStepped:Connect(function()
+    if not aimbotEnabled then return end
+
+    local player = game.Players.LocalPlayer
+    local character = player.Character
+    if not character or not character:FindFirstChild("Humanoid") or character.Humanoid.Health <= 0 then return end
+
+    local rootPart = character:FindFirstChild("HumanoidRootPart")
+    if not rootPart then return end
+
+    local target = getClosestTargetForAimbot()
+    if target then
+        local targetPosition = target.Position
+        local currentCFrame = rootPart.CFrame
+        local newCFrame = CFrame.new(currentCFrame.Position, Vector3.new(targetPosition.X, currentCFrame.Position.Y, targetPosition.Z)) 
+        rootPart.CFrame = currentCFrame:Lerp(newCFrame, aimbotSmoothness)
+
+        if autoAttackEnabled then
+            local tool = character:FindFirstChildOfClass("Tool")
+            if tool and tool:FindFirstChild("Handle") then
+                local currentTime = tick()
+                if canHitTarget(player, target) and currentTime - lastAimbotAttackTime >= attackCooldown then
+                    tool:Activate()
+                    lastAimbotAttackTime = currentTime
+                end
+            end
+        end
+    end
+end)
+
+CombatWindow:Slider({
+    Text = "Aimbot Range",
+    Minimum = 10,
+    Maximum = 100,
+    Default = aimbotRange,
+    Callback = function(value)
+        aimbotRange = value
+    end
+})
+
+CombatWindow:Slider({
+    Text = "Aimbot Smoothness",
+    Minimum = 1,
+    Maximum = 50,
+    Default = aimbotSmoothness,
+    Callback = function(value)
+        aimbotSmoothness = value
+    end
+})
+
+MovementWindow:Toggle({
+    Text = "Speed Hack",
+    Default = false,
+    Callback = function(state)
+        speedEnabled = state
+        local player = game.Players.LocalPlayer
+        local character = player.Character or player.CharacterAdded:Wait()
+        local rootPart = character:WaitForChild("HumanoidRootPart")
+
+        if speedEnabled then
+            local bodyVelocity = Instance.new("BodyVelocity")
+            bodyVelocity.Name = "SpeedHackVelocity"
+            bodyVelocity.MaxForce = Vector3.new(math.huge, 0, math.huge)
+            bodyVelocity.Parent = rootPart
+
+            game:GetService("RunService").Heartbeat:Connect(function()
+                if speedEnabled and rootPart and rootPart:FindFirstChild("SpeedHackVelocity") then
+                    local humanoid = character:FindFirstChild("Humanoid")
+                    if humanoid then
+                        local moveDirection = humanoid.MoveDirection * speedMultiplier
+                        bodyVelocity.Velocity = Vector3.new(moveDirection.X, 0, moveDirection.Z)
+                    end
+                end
+            end)
+        else
+            if rootPart:FindFirstChild("SpeedHackVelocity") then
+                rootPart:FindFirstChild("SpeedHackVelocity"):Destroy()
+            end
+        end
+    end
+})
+
+MovementWindow:Slider({
+    Text = "Speed Multiplier",
+    Minimum = 10,
+    Maximum = 100,
+    Default = speedMultiplier,
+    Callback = function(value)
+        speedMultiplier = value
+    end
+})
+
+MovementWindow:Toggle({
+    Text = "Target Strafe",
+    Default = false,
+    Callback = function(state)
+        targetStrafeEnabled = state
+    end
+})
+
+MovementWindow:Toggle({
+    Text = "Smart Strafe Mode",
+    Default = false,
+    Callback = function(state)
+        smartStrafeEnabled = state
+    end
+})
+
+MovementWindow:Slider({
+    Text = "Strafe Speed",
+    Minimum = 1,
+    Maximum = 50,
+    Default = strafeSpeed,
+    Callback = function(value)
+        strafeSpeed = value
+    end
+})
+
+MovementWindow:Slider({
+    Text = "Strafe Distance",
+    Minimum = 1,
+    Maximum = 10,
+    Default = strafeDistance,
+    Callback = function(value)
+        strafeDistance = value
+    end
+})
+
+MovementWindow:Toggle({
+    Text = "Fly",
+    Default = false,
+    Callback = function(state)
+        flyEnabled = state
+        local player = game.Players.LocalPlayer
+        local character = player.Character or player.CharacterAdded:Wait()
+        local rootPart = character:WaitForChild("HumanoidRootPart")
+        local humanoid = character:WaitForChild("Humanoid")
+
+        if flyEnabled then
+            if not flyPlatform then
+                flyPlatform = Instance.new("Part")
+                flyPlatform.Size = Vector3.new(5, 0.2, 5)
+                flyPlatform.Transparency = 1
+                flyPlatform.Anchored = true
+                flyPlatform.CanCollide = true
+                flyPlatform.Position = rootPart.Position - Vector3.new(0, 3, 0)
+                flyPlatform.Parent = workspace
+                initialFlyHeight = flyPlatform.Position.Y
+            end
+
+            local connection
+            connection = game:GetService("RunService").Heartbeat:Connect(function(deltaTime)
+                if flyEnabled and character and rootPart and humanoid.Health > 0 then
+                    local moveDirection = humanoid.MoveDirection
+                    local camera = workspace.CurrentCamera
+                    local cameraCFrame = camera.CFrame
+
+                    if flyPlatform then
+                        local flyDirection = cameraCFrame:VectorToWorldSpace(moveDirection)
+                        local newPosition = flyPlatform.Position + flyDirection * flySpeed * deltaTime
+
+                        if game:GetService("UserInputService"):IsKeyDown(Enum.KeyCode.Space) then
+                            newPosition = newPosition + Vector3.new(0, flySpeed * deltaTime, 0)
+                        end
+                        if game:GetService("UserInputService"):IsKeyDown(Enum.KeyCode.LeftShift) then
+                            newPosition = newPosition - Vector3.new(0, flySpeed * deltaTime, 0)
+                        end
+
+                        local heightDifference = newPosition.Y - initialFlyHeight
+                        if heightDifference > maxFlyHeight then
+                            newPosition = Vector3.new(newPosition.X, initialFlyHeight + maxFlyHeight, newPosition.Z)
+                        end
+
+                        flyPlatform.Position = newPosition
+                        local currentRotation = rootPart.CFrame - rootPart.CFrame.Position
+                        rootPart.CFrame = currentRotation + (flyPlatform.Position + Vector3.new(0, 3, 0))
+                    end
+                else
+                    if flyPlatform then
+                        flyPlatform:Destroy()
+                        flyPlatform = nil
+                    end
+                    initialFlyHeight = nil
+                    if connection then connection:Disconnect() end
+                end
+            end)
+        else
+            if flyPlatform then
+                flyPlatform:Destroy()
+                flyPlatform = nil
+            end
+            initialFlyHeight = nil
+        end
+    end
+})
+
+MiscWindow:Button({
+    Text = "Send RemoveEvent Pulse",
+    Callback = function()
+        local removeEvent = ReplicatedStorage:FindFirstChild("Enable1v1Map")
+        if removeEvent and removeEvent then
+            removeEvent:FireServer()
+            local player = game.Players.LocalPlayer
+            local character = player.Character or player.CharacterAdded:Wait()
+            local rootPart = character:WaitForChild("HumanoidRootPart")
+            local pulse = Instance.new("Part")
+            pulse.Shape = Enum.PartType.Ball
+            pulse.Size = Vector3.new(1, 1, 1)
+            pulse.Position = rootPart.Position
+            pulse.Anchored = true
+            pulse.CanCollide = false
+            pulse.Transparency = 0.5
+            pulse.Color = Color3.fromRGB(0, 255, 255)
+            pulse.Material = Enum.Material.Neon
+            pulse.Parent = workspace
+            local tweenInfo = TweenInfo.new(0.5, Enum.EasingStyle.Quad, Enum.EasingDirection.Out)
+            local tween = TweenService:Create(pulse, tweenInfo, {Size = Vector3.new(5, 5, 5), Transparency = 1})
+            tween:Play()
+            tween.Completed:Connect(function() pulse:Destroy() end)
+        else
+            warn("RemoveEvent not found in ReplicatedStorage!")
+        end
+    end
+})
+
+MovementWindow:Slider({
+    Text = "Fly Speed",
+    Minimum = 1,
+    Maximum = 5,
+    Default = flySpeed,
+    Callback = function(value)
+        flySpeed = value
+    end
+})
+
+-- Render Window
+RenderWindow:Toggle({
+    Text = "ESP",
+    Default = false,
+    Callback = function(state)
+        espEnabled = state
+        if espEnabled then
+            for _, player in pairs(game.Players:GetPlayers()) do
+                if player ~= game.Players.LocalPlayer and player.Character then
+                    local espHighlight = Instance.new("Highlight")
+                    espHighlight.FillColor = Color3.fromRGB(0, 255, 0)
+                    espHighlight.OutlineColor = Color3.fromRGB(0, 0, 0)
+                    espHighlight.Parent = player.Character
+                    espHighlights[player] = espHighlight
+                end
+            end
+        else
+            for _, highlight in pairs(espHighlights) do
+                if highlight then highlight.Parent = nil end
+            end
+            espHighlights = {}
+        end
+    end
+})
