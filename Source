@@ -512,22 +512,43 @@ MiscWindow:Button({
     end
 })
 
+local bypassEnabled = false
+local oldNamecall -- Переменная для хранения оригинального __namecall
+
 MiscWindow:Toggle({
     Text = "AC Bypass",
     Default = false,
     Callback = function(state)
         bypassEnabled = state
+        
+        -- Обработка ACLocal
         if game:GetService("ReplicatedFirst"):FindFirstChild("ACLocal") then
             local aclocal = game:GetService("ReplicatedFirst"):FindFirstChild("ACLocal")
             if bypassEnabled then
                 aclocal.Enabled = false
-                print("Anti-cheat disabled")
             else
                 aclocal.Enabled = true
-                print("Anti-cheat enabled")
             end
         else
             print("ACLocal not found in ReplicatedFirst")
+        end
+        
+        -- Обход RemoteEvent "Detected"
+        local event = game:GetService("ReplicatedStorage"):FindFirstChild("Detected")
+        if event then
+            if bypassEnabled then
+                if not oldNamecall then 
+                    oldNamecall = hookmetamethod(game, "__namecall", function(self, ...)
+                        if self == event and getnamecallmethod() == "FireServer" then
+                            return
+                        end
+                        return oldNamecall(self, ...)
+                    end)
+                end
+            else
+            end
+        else
+            print("RemoteEvent 'Detected' not found in ReplicatedStorage")
         end
     end
 })
