@@ -24,22 +24,19 @@ local strafeDistance = 4
 local espEnabled = false
 local espHighlights = {}
 local flyEnabled = false
-local flySpeed = 20
-local flyPlatform = nil
-local maxFlyHeight = 5
-local initialFlyHeight = nil
+local flySpeed = 50 -- Увеличил скорость для простого полёта
 local aimbotEnabled = false
 local aimbotRange = 50 
 local aimbotSmoothness = 1 
 local autoAttackEnabled = false 
 local friendsList = {}
+local bypassEnabled = false
 
 local CombatWindow = library:Window({Text = "Combat"})
 local MovementWindow = library:Window({Text = "Movement"})
 local RenderWindow = library:Window({Text = "Render"})
 local MiscWindow = library:Window({Text = "Misc"})
 
--- Функция проверки, является ли игрок другом
 local function isFriend(player)
     return table.find(friendsList, player.Name) ~= nil
 end
@@ -362,26 +359,18 @@ MovementWindow:Toggle({
         local player = game.Players.LocalPlayer
         local character = player.Character or player.CharacterAdded:Wait()
         local rootPart = character:WaitForChild("HumanoidRootPart")
+        local humanoid = character:WaitForChild("Humanoid")
 
         if speedEnabled then
-            local bodyVelocity = Instance.new("BodyVelocity")
-            bodyVelocity.Name = "SpeedHackVelocity"
-            bodyVelocity.MaxForce = Vector3.new(math.huge, 0, math.huge)
-            bodyVelocity.Parent = rootPart
-
-            game:GetService("RunService").Heartbeat:Connect(function()
-                if speedEnabled and rootPart and rootPart:FindFirstChild("SpeedHackVelocity") then
-                    local humanoid = character:FindFirstChild("Humanoid")
-                    if humanoid then
-                        local moveDirection = humanoid.MoveDirection * speedMultiplier
-                        bodyVelocity.Velocity = Vector3.new(moveDirection.X, 0, moveDirection.Z)
+            game:GetService("RunService").Heartbeat:Connect(function(deltaTime)
+                if speedEnabled and rootPart and humanoid and humanoid.Health > 0 then
+                    local moveDirection = humanoid.MoveDirection
+                    if moveDirection.Magnitude > 0 then
+                        local speedStep = moveDirection.Unit * (speedMultiplier * deltaTime)
+                        rootPart.CFrame = rootPart.CFrame + Vector3.new(speedStep.X, 0, speedStep.Z)
                     end
                 end
             end)
-        else
-            if rootPart:FindFirstChild("SpeedHackVelocity") then
-                rootPart:FindFirstChild("SpeedHackVelocity"):Destroy()
-            end
         end
     end
 })
@@ -443,59 +432,53 @@ MovementWindow:Toggle({
         local humanoid = character:WaitForChild("Humanoid")
 
         if flyEnabled then
-            if not flyPlatform then
-                flyPlatform = Instance.new("Part")
-                flyPlatform.Size = Vector3.new(5, 0.2, 5)
-                flyPlatform.Transparency = 1
-                flyPlatform.Anchored = true
-                flyPlatform.CanCollide = true
-                flyPlatform.Position = rootPart.Position - Vector3.new(0, 3, 0)
-                flyPlatform.Parent = workspace
-                initialFlyHeight = flyPlatform.Position.Y
-            end
-
+            humanoid.PlatformStand = true -- Отключаем стандартное движение
             local connection
             connection = game:GetService("RunService").Heartbeat:Connect(function(deltaTime)
                 if flyEnabled and character and rootPart and humanoid.Health > 0 then
-                    local moveDirection = humanoid.MoveDirection
                     local camera = workspace.CurrentCamera
-                    local cameraCFrame = camera.CFrame
+                    local moveDirection = Vector3.new()
+                    
+                    -- Управление движением
+                    local inputService = game:GetService("UserInputService")
+                    local camLook = camera.CFrame.LookVector
+                    local camRight = camera.CFrame.RightVector
+                    
+                    if inputService:IsKeyDown(Enum.KeyCode.W) then
+                        moveDirection = moveDirection + camLook
+                    end
+                    if inputService:IsKeyDown(Enum.KeyCode.S) then
+                        moveDirection = moveDirection - camLook
+                    end
+                    if inputService:IsKeyDown(Enum.KeyCode.D) then
+                        moveDirection = moveDirection + camRight
+                    end
+                    if inputService:IsKeyDown(Enum.KeyCode.A) then
+                        moveDirection = moveDirection - camRight
+                    end
+                    if inputService:IsKeyDown(Enum.KeyCode.Space) then
+                        moveDirection = moveDirection + Vector3.new(0, 1, 0)
+                    end
+                    if inputService:IsKeyDown(Enum.KeyCode.LeftShift) then
+                        moveDirection = moveDirection - Vector3.new(0, 1, 0)
+                    end
 
-                    if flyPlatform then
-                        local flyDirection = cameraCFrame:VectorToWorldSpace(moveDirection)
-                        local newPosition = flyPlatform.Position + flyDirection * flySpeed * deltaTime
-
-                        if game:GetService("UserInputService"):IsKeyDown(Enum.KeyCode.Space) then
-                            newPosition = newPosition + Vector3.new(0, flySpeed * deltaTime, 0)
-                        end
-                        if game:GetService("UserInputService"):IsKeyDown(Enum.KeyCode.LeftShift) then
-                            newPosition = newPosition - Vector3.new(0, flySpeed * deltaTime, 0)
-                        end
-
-                        local heightDifference = newPosition.Y - initialFlyHeight
-                        if heightDifference > maxFlyHeight then
-                            newPosition = Vector3.new(newPosition.X, initialFlyHeight + maxFlyHeight, newPosition.Z)
-                        end
-
-                        flyPlatform.Position = newPosition
-                        local currentRotation = rootPart.CFrame - rootPart.CFrame.Position
-                        rootPart.CFrame = currentRotation + (flyPlatform.Position + Vector3.new(0, 3, 0))
+                    if moveDirection.Magnitude > 0 then
+                        moveDirection = moveDirection.Unit -- Нормализуем вектор
+                        rootPart.Velocity = moveDirection * flySpeed
+                    else
+                        rootPart.Velocity = Vector3.new(0, 0, 0) -- Останавливаем, если нет движения
                     end
                 else
-                    if flyPlatform then
-                        flyPlatform:Destroy()
-                        flyPlatform = nil
-                    end
-                    initialFlyHeight = nil
                     if connection then connection:Disconnect() end
+                    humanoid.PlatformStand = false
                 end
             end)
         else
-            if flyPlatform then
-                flyPlatform:Destroy()
-                flyPlatform = nil
+            humanoid.PlatformStand = false
+            if rootPart then
+                rootPart.Velocity = Vector3.new(0, 0, 0)
             end
-            initialFlyHeight = nil
         end
     end
 })
@@ -529,17 +512,36 @@ MiscWindow:Button({
     end
 })
 
+MiscWindow:Toggle({
+    Text = "AC Bypass",
+    Default = false,
+    Callback = function(state)
+        bypassEnabled = state
+        if game:GetService("ReplicatedFirst"):FindFirstChild("ACLocal") then
+            local aclocal = game:GetService("ReplicatedFirst"):FindFirstChild("ACLocal")
+            if bypassEnabled then
+                aclocal.Enabled = false
+                print("Anti-cheat disabled")
+            else
+                aclocal.Enabled = true
+                print("Anti-cheat enabled")
+            end
+        else
+            print("ACLocal not found in ReplicatedFirst")
+        end
+    end
+})
+
 MovementWindow:Slider({
     Text = "Fly Speed",
-    Minimum = 1,
-    Maximum = 5,
+    Minimum = 10,
+    Maximum = 100,
     Default = flySpeed,
     Callback = function(value)
         flySpeed = value
     end
 })
 
--- Render Window
 RenderWindow:Toggle({
     Text = "ESP",
     Default = false,
